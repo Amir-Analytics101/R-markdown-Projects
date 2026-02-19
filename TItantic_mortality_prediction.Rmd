@@ -1,0 +1,226 @@
+---
+title: "hw4_sela_amir"
+author: "Amir Sela"
+date: "2024-11-09"
+output: github_document
+---
+
+```{r load-packages, message = FALSE, eval = TRUE}
+library(tidyverse)
+library(tidymodels)
+library(car)
+library(ISLR)
+library(titanic)
+library(recipes)
+```
+
+```{r}
+glimpse(titanic_train) # take a glimpse at the dataset
+```
+
+# Main Variables
+* Outcome variable : 
+  + Survived (1 = survived, 0 = did not survive)
+* Predictor variables: 
+  + Pclass (passenger class), Sex, Age, SibSp (siblings/spouses aboard), Parch (parents/children aboard), and Fare.
+  
+---
+
+
+```{r}
+#| label: Surivial rate(class and sex)
+
+titanic_train %>% # the dataframe
+  select(Pclass, Sex, Survived) %>%  # select only needed columns
+  group_by(Pclass, Sex) %>% # grouping by class and sex
+  summarise(
+    avg_survivalRate_class_sex = mean(Survived) # get the avarage
+  )
+
+```
+
+* Pclass column has one of three variables:
+  + 1 (Upper class socio status)
+  + 2 (Middle Class socio status)
+  + 3 (Lower Class socio status)   
+By the analysis we can say that the higher the socio status (Pclass) and being a female strongly influences the survival rate
+
+
+```{r}
+#| label: Age as an indicator
+# these chunks are same as the code above just age is also added as an indicator
+younger_titanic <- titanic_train %>%
+  filter(Age <= 18) %>% 
+  select(Pclass, Sex, Survived, Age) %>% 
+  group_by(Pclass, Sex) %>%
+  summarise(
+    avg_survivalRate_class_sex_young = mean(Survived)
+  )
+  
+younger_titanic
+
+older_titanic <- titanic_train %>%
+  filter(Age > 18) %>% 
+  select(Pclass, Sex, Survived, Age) %>% 
+  group_by(Pclass, Sex) %>%
+  summarise(
+    avg_survivalRate_class_sex_old = mean(Survived)
+  )
+
+older_titanic
+```
+As we can see from the analyzed data, the survival rate of the young(less than 18) and the old(more than 18) doesnt change for passangers in class 1(upper class), but as the socio classes decrease there is a higher chance of survival if you are young, so age moderatly influences the survival rate as an indicator.
+
+---
+
+```{r}
+#| label: Rows with missing data
+
+titanic_train %>% 
+  count(if_any(everything(), is.na)) # checks if any columns contain NA values and returns the rows
+
+```
+As we can see of `r 177/(177+714)` percent the data is missing so filling out the missing values data is a good idea. For us to fill the missing values with mean age we need to check for data so it isnt strongly skewed.
+
+```{r}
+#| label: Histogram
+ggplot(titanic_train,aes( x = Age)) +
+  geom_histogram()
+
+```
+       
+By visualizing the distribution of the age, we can see that the data is only lightly skewed to the right, so its safe for us to fill the missing value with the mean age. To take it a step further I will fill the missing Age by class. If missing age is in class 1, i will put the mean age of that class, and so on. This way not all 177 missing ages are filled with the same value.
+
+```{r}
+#| label: Filling missing data
+
+titanic_train <- titanic_train %>% 
+  group_by(Pclass) %>% 
+  mutate(Age = ifelse(is.na(Age), mean(Age, na.rm = TRUE), Age))# if age is missing, input the mean age of the class per row
+
+#now check if the dataframe has any missing values
+
+titanic_train %>% 
+  count(if_any(everything(), is.na))
+```
+There are not any missing values anymore, so now we can continue working with the data to create accurate models.
+
+---
+
+# Splitting the data with 80/20 %
+
+```{r}
+#| label: Splitting the data
+
+set.seed(1116)
+
+titanic_split = initial_split(titanic_train, prop = 0.80)
+
+titanic_train_data <- training(titanic_split)
+titanic_test_data <- testing(titanic_split)
+
+
+```
+We will use the 80% data to train the model and the 20% data to test the model
+
+---
+
+Now we will create dummy variables using recipes
+
+```{r}
+
+#| label: Recipe-Dummy
+titanic_train_data <- titanic_train_data %>% 
+  mutate(Survived = as.factor(Survived))
+
+train_rec <- recipe(Survived ~ Age + Pclass + Sex, data = titanic_train_data) %>%
+
+  step_mutate(Pclass = as.factor(Pclass)) %>% # we need to treat the Pclass category as a factor category, and also survived needs to be a factor and not numeric, that way we know if the individual survived or not
+  #we wanna remove passangerId, name,fare, ticket number and cabin because they dont influence the prediction
+  step_dummy(all_nominal(), -all_outcomes()) # creating dummy variables, only affects variables like sex, embarked, and Pclass
+  
+
+train_rec_prepped <- prep(train_rec) # by preping the data we remove the columns we wanted
+titanic_rec_clean <- bake(train_rec_prepped, new_data = NULL) # by baking the data we apply the new data with removed columns
+
+head(titanic_rec_clean) # now we can see the we removed the unneccesary columns
+
+
+
+
+```
+Now we have a clean recipe with dummy variables and removed unneccesary variables from the dataframe, we are ready to build the model
+
+---
+```{r}
+#| label: Model-Workflow 
+
+titanic_mod <- logistic_reg() %>% 
+  set_engine("glm", family = "binomial") # giving the variable a model
+
+titanic_workflow <- workflow() %>%  # creating a workflow for simplicity
+  add_model(titanic_mod) %>% 
+  add_recipe(train_rec)
+
+titanic_fit <- titanic_workflow %>% # fitting the data to the model and the recipe
+  fit(data = titanic_train_data)
+  # view the model
+
+titanic_tidy <- tidy(titanic_fit) # tidying the data so its easy to understant
+
+titanic_tidy
+```
+Based on this we could ask questions about survival rate and estimate the propability
+E.x what is the survival rate for a third-class female passanger aged 20?
+The propability that a third-class female passenger aged 20 survives is `r 1 / (1 + (exp(-1 * (titanic_tidy$estimate[1] + (20*titanic_tidy$estimate[2] + titanic_tidy$estimate[4]))))) * 100` %.
+Here to calculate the propability i used the 1 / (1 + exp(-logit_p)) formula and just plugged in the number.
+Based on my finding i predict that the passenger will `r ifelse((1 / (1 + (exp(-1 * (titanic_tidy$estimate[1] + (20*titanic_tidy$estimate[2] + titanic_tidy$estimate[4])))))) < 0.5, "not survive", "survive")`. I assume that if the propability is less than .5 the chances are that the passenger will not survive
+
+---
+
+```{r}
+#| label: Predicting survival propabilities
+
+titanic_pred <- predict(titanic_fit, titanic_test_data, type = "prob") %>% 
+  bind_cols(titanic_test_data %>% select(Survived))
+
+# i will make a function for the prediction code chunk what way when we want to change the cutoff propability we dont have to rewrite code
+
+calculate_titanic <- function(cutoff,metric) { # creating the function
+  titanic_pred <- titanic_pred %>% 
+    mutate(predicted = ifelse(.pred_1 > cutoff, "1", "0")) # dataframe titanic_pred will be adjusted based on the cutoff value inputed
+  
+  predicted_matrix <- table(Predicted = titanic_pred$predicted,
+                          Actual = titanic_pred$Survived) # fpr the actual and predicted matrix
+  accuracy <- mean(titanic_pred$predicted == titanic_pred$Survived)
+  
+  sensitivity <- predicted_matrix["1","1"] / (predicted_matrix["1","1"] + predicted_matrix["0","1"])#calculate sensitivity
+  specificity <- predicted_matrix["0","0"] / (predicted_matrix["0","0"] + predicted_matrix["1","0"])# calculcate specificity
+  
+# if else loop to return based on what we want
+if (metric == "sensitivity") {
+  return(sensitivity)
+}
+  else if( metric == "specificity"){
+    return(specificity)
+  }
+  else if( metric == "accuracy"){
+    return(accuracy)
+  }
+  else if(metric == "predicted_matrix"){
+    return(predicted_matrix)
+  }
+}
+
+calculate_titanic(0.5, "predicted_matrix")
+```
+---
+
+With a cutoff of .5, the accuracy of the model is `r calculate_titanic(0.5, "accuracy")`, the sensitivity is `r calculate_titanic(0.5, "sensitivity")` and the specificity is `r calculate_titanic(0.5, "specificity")`. With a cutoff of .5, the rate of sensitivity(true positive rate) and the specificity(true negative rate) are close to each other which both are around .8(specificity is higher). This means that most of the time we will get correct predictions when using this model with a cutoff of .5.
+Now lets change the cutoff to .3(if prediction that the passenger will survive is greater than .3 it will mark it as the passenger will survive).   
+With a cutoff of .3, the accuracy of the model is `r calculate_titanic(0.3, "accuracy")`, the sensitivity is `r calculate_titanic(0.3, "sensitivity")` and the specificity is `r calculate_titanic(0.3, "specificity")`.
+As we can see the accuracy has slightly decreased(by `r calculate_titanic(0.5,"accuracy") - calculate_titanic(0.3, "accuracy")`). But the most notable differences are between specificity and sensitivity. When the cutoff is .3 then we can see that the sensitivity has increased meaning there is a lesser chance of a having a false negative, and the specificity has decreased  meaning there is a higher chance of a false positive.   
+Now again lets change the cutoff to .7.    
+With a cutoff of .7, the accuracy of the model is `r calculate_titanic(0.7, "accuracy")`, the sensitivity is `r calculate_titanic(0.7, "sensitivity")` and the specificity is `r calculate_titanic(0.7, "specificity")`.
+The accuracy of the model has not decreased much, but the specificity has has increases dramatically(close to 1) and the sensitivity has also decreased almost to one half.     
+If we prioritize sensitivity(true positive rate) than that would mean that the model can better predict the number of surivivors, and can reduce the risk of missing someone who would survive. If we prioritize specificity(tru negative rate) that means we can more accuretaly predict those who wont survive. In this case we wanna prioritize sensitivity, so that way we can capture as many as we can correctly, because we would rather save those who we know we can save and then we can also save those who the model predicted would die but lived.

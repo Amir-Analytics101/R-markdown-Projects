@@ -1,0 +1,214 @@
+---
+title: "hw2-sela-amir"
+author: "Amir Sela"
+date: "2024-10-05"
+output: github_document
+---
+# Loading the data and tidyverse libraries
+
+
+```{r, message = FALSE}
+  #| label: Loading data and libraries
+#if library not installed uncomment next line to install the library
+#install.packages("nycflights13")
+library(nycflights13)
+library(tidyverse)
+
+
+```
+
+
+## Quick view and summary of the data so we know what we are dealing with
+ There are ***`r nrow(flights)`*** rows of data, meaning a total of ***`r nrow(flights)`*** flights
+```{r}
+   #| label: View the data
+summary(flights) # quick info about the flights data
+airlines # we know with what airlines we are dealing with and their carrier id
+
+```
+
+---
+
+# Data Manipulation
+
+The data will be joined so we can view the airline name as well, and the we will manipulate it by using the `dplyr` package of tidyverse, where we will select top 5 airlines by **number of flights**
+
+
+```{r}
+
+  #| label: Data Manipulation
+full_flights_data <- flights %>% 
+  left_join(airlines, by  = "carrier") %>% # joined data so we can see carrier name as well
+  relocate(name, .after = carrier) #by default R adds the name column in the end, so this code will add the name column after the carrier column, so it makes it easier to identify carrier name when just looking at this data
+totalN_of_flights <- full_flights_data %>% 
+  count(carrier,name, sort = TRUE) #counts the total times the airline has had a flight, sort = TRUE sorts it from highest to lowest
+
+top_five_airlines <- totalN_of_flights %>% 
+  slice_head( n = 5)# view the top 5 rows only
+# i created a seperate table for top 5 because i wont want the totalN_of_flights to cointain only the top 5, because i will use the totalN_of_flights df later when
+top_five_airlines
+
+
+
+#another way we can do this is to first select the top 5 airlines and then join tables
+```
+---
+
+# Summary statistics
+ 
+ Each airline will have its summary statistics on *avg arrival delay*, *% of flights delayed* and *n of total flights*. This is great to make a comparison among airlines and their **delays**
+ 
+ 
+```{r, message = FALSE} 
+
+  #| label: Summary Statistics
+
+summaryStats_airlines <- full_flights_data %>% 
+  group_by(carrier, name) %>% # grouping by both carrier and name so we can see both names in the table, its the same as grouping just by one of them since every carrier ID only has one corresponding name value
+  summarise(
+    avg_arrival_delay = mean(arr_delay, na.rm = TRUE),
+    percent_flights_delayed = (sum(arr_delay > 0, na.rm = TRUE) / n())* 100,
+    total_flights = n()
+    )
+summaryStats_airlines_arranged <- summaryStats_airlines %>% 
+  arrange(percent_flights_delayed) # so we can see which airline has lowest percent of flights delayed
+
+summaryStats_airlines_arranged
+```
+
+---
+
+# Plots
+
+
+
+We will explore a couple graphs and also explain what can we learn from these plots/graphs
+
+
+### Bar Plot
+
+```{r}
+#| label: Bar chart
+
+ggplot(full_flights_data[c("carrier", "name")], aes(x = reorder(carrier, -table(carrier)[carrier]), fill = name)) + # this code reorders the bars from highest count to lowest so this way we can easily distingush highest count per airline to the lowest count. Also i only wanted to retrieve only the needed columns for the graph, and so i only selected them, because if this was a situation where an actual business uses cloud services to run the code, when running code if it first retrieves the whole table it consumes more memory(gb or tb depending on data frame size) which costs the company more money, so by selecting only the needed columns we save time and money for the company
+  geom_bar(stat = "count") +
+  scale_fill_viridis_d(option = "magma") + # this code gives more distinguishable color to each bar, so its easir to tell them apart
+  labs(
+    x = "Carrier ID",
+    y = "Count",
+    title = "Count of flights per airline in 2013"
+  ) +
+  theme_minimal() 
+# NOTE : i added the legend on the right, but instead of using carrier ID i used name of the airline corresponding to color, because that way in case we dont now what an airlines carrier ID is we can look at the color corresponding to the legend to see the name
+
+
+```
+ 
+ Now we have the bar plot, we dont really know the excact count per airline, so to make it look nice in a table format, i will use a new library called `knitr`
+ 
+### Table of counts per airline
+ 
+```{r}
+
+#| label: Loading Table
+
+library(knitr) # loading the library
+
+kable(totalN_of_flights, col.names = c("Carrier","Name", "Count"))
+# this chunk basically take the data and puts it in a table format
+
+```
+ 
+### Line graph
+ 
+ We will explore ***trends*** over time (monthly) with a line plot
+ 
+```{r}
+#| label: Line graph
+
+monthly_delays <- full_flights_data %>% 
+  filter(dep_delay > 0) %>% # we are filtering the df to only include rows where dep_delay is greater than 0, meaning that there is a delay, and then we group how many flights are there in a month, given that dep_delay is greater than zero
+  group_by(name, month) %>% 
+  summarise(count_of_delays = n()) 
+
+
+ggplot(monthly_delays, aes(x = month, y = count_of_delays, color = name, group = name)) +
+  geom_line() +
+  scale_x_continuous(breaks = seq(1,12, by = 1)) + # i added this line beacuse without it in the x axis it doesnt give me intergers but rational numbers such as 2.5 etc. This code ensures that x-axis displays full numbers from 1 to 12, meaning months. It makes sure no decimals appear on the x axis, which would confuse us
+  facet_wrap(~name, ncol = 4)+# the reason i faceted is because if we show all the lines in one graph its a mess, you can try it by commenting out the faceting line and you will realise what a mess it is
+  labs(
+    x = "month",
+    y = "Count of Delays",
+    title = "Count of delays around the year"
+  )+
+  theme(legend.position = "none") # we dont need legend, it only takes space and makes it more compact and harder to read
+
+
+```
+
+### Hex Plot
+
+Next we are going to ***analyze*** is there a relationship between `departure time` and `departure delay` per airline. One might think that this is useles, but this **hex plot** will tell us if there are less/more delays depending on what time of the day the airplane is departing
+
+```{r}
+
+#| label: Hex Plot
+#first create a df where we only need those three columns - carrier, dep_time and dep_delay for each airline
+
+depTable <- full_flights_data %>% 
+  select(carrier,dep_time,dep_delay) %>% 
+  filter(!is.na(dep_time), !is.na(dep_delay)) # filter out NA
+
+
+
+
+ggplot(depTable, aes(x = dep_time, y = dep_delay, group = carrier)) +
+  geom_hex(bins = 30) +
+  facet_wrap(~carrier) +
+  scale_fill_gradient(low = "lightpink", high = "darkred") +# Adjusting color scale
+  scale_x_continuous(breaks = seq(0,2400, by = 800))+ #adjusting x scale so it more readable
+  labs(x = "Departure Time (HHMM Format)", y = "Departure Delay (minutes)") +
+  theme_minimal()
+# the reason i did a hex plot over a scatter plot is because graphing the scatter plot takes more time and memory, which depending on the device this code runs might cause some trouble
+```
+
+---
+
+# Business Analysis
+
+
+### Based on my findings, i will discuss which airline has the most consistent on-time performance.
+
+Based on the summary statistics table, the airline with the most consistent on-time perfomance is **`r summaryStats_airlines_arranged$name[1]`** with the lowest percentage of flights delayed at **`r summaryStats_airlines_arranged$percent_flights_delayed[1]`**. But this doesnt mean that they still are the best when it comes to on-time perfomance beacuse they only have **`r summaryStats_airlines_arranged$total_flights[1]`** total of flights. When comparing to **`r summaryStats_airlines_arranged$name[4]`** that has a percentage of delayed flights at **`r summaryStats_airlines_arranged$percent_flights_delayed[4]`** which is slightly higher, but it has a lot more total flight at **`r summaryStats_airlines_arranged$total_flights[4]`**. Now beacuse they have a lot more flights, propability is that they have a little more delayed flights.
+
+### How this performance could affect profitability (e.g., customer satisfaction, repeat business)?
+
+The perfomance of having a low percentage of flights delayed flights could result in having more repeat business and costumer satisfaction. But this analysis doesnt include of how happy costumers are with the airlines in-flight services. As long as the airline keeps the costumer satisfaction in good shape, when combined with low-delay percentage their profitability will increase in time.
+
+
+---
+
+### A brief summary of my findings, including recommendations for airlines looking to improve their on-time performance.
+ 
+ From **Bar Plot** - My findings concluded that the airline with the most flights is `r totalN_of_flights$name[which.max(totalN_of_flights$n)]` at a # of total flights being `r max(totalN_of_flights$n, na.rm = TRUE)`.
+
+From **Line Graphs** - We found that half of the airlines have a steady continious amount of delays around the year, but the other half have increasing and decreasing # of delays around the year.
+We can see that the airlines which have a high number of delayes all year round, they also tend to increase their # of delays when it reaches March. 
+
+From **Hex Plot** - This is a very interesting finding. According to the hex plot for almost all airlines after estimated 6 AM the number of delays increases until estimated 3AM. This could give a costumer some very useful information when booking their flight, such as if they should increase their chances of expecting a delay depending by the time of the day.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

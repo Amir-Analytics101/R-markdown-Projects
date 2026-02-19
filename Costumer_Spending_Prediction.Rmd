@@ -1,0 +1,279 @@
+---
+title: "HW5_sela_amir"
+author: "Amir Sela"
+date: "2024-11-20"
+output: github_document
+---
+```{r, message= FALSE}
+#| label: loading libraries and data
+library(dplyr)
+library(ggplot2)
+library(cluster)
+library(factoextra)
+library(tidyclust)
+library(tidymodels)
+library(GGally)
+library(plotly)
+library(DT)
+library(tidyverse) 
+library(rpart.plot)
+library(lubridate)
+library(ggridges)
+
+
+retail_data_1 <- read_csv("online_retail_1.csv")
+retail_data_2 <- read_csv("online_retail_2.csv")
+
+
+
+retail_data_all <- rbind(retail_data_1,retail_data_2)
+
+head(retail_data_all)
+
+```
+   
+###From the homework i will answer questions 3,10 and 11
+
+
+# Question 3:Which customer segments exist within our customer base?
+   To answer this question, i will approach it in two ways, first by grouping the data by certain conditions and visualizing it, and then with k means clustering
+```{r}
+#| label: Summary-check values
+
+# first lets take a look at the data
+summary(retail_data_all)
+# we can see that when it comes to numerical data there are some extreme data values
+# now lets check if there are any missing values
+sapply(retail_data_all, function(x) sum(is.na(x))) # this gives us the sum of missing values per column
+
+retail_data_all_cleaned <- na.omit(retail_data_all) # dataframe without NA values
+
+```
+We have a lot of customerID(`r (sum(is.na(retail_data_all$CustomerID)))/ nrow(retail_data_all) * 100` %) values missing, assuming that the missing data is random, it shouldnt affect the visualization a lot
+We have `r n_distinct((retail_data_all$CustomerID))` distinct customers
+
+
+#Grouping
+We will be grouping by costumer ID
+```{r}
+#| label: Grouping
+ last_date <- max(as.Date(retail_data_1$InvoiceDate, format = "%m/%d/%Y %H:%M"))# this variable is the last date that the dataframe has, meaning most current
+retail_summary <- retail_data_all_cleaned %>% 
+  group_by(CustomerID) %>%  #grouping
+  summarise(
+    spend_sum = sum(Price * Quantity), # summary of how much they spend
+    avg_quantity = mean(Quantity), # avg quantity
+    sum_transactions = n(), # num of transaction
+    recency = as.numeric(difftime(last_date,max(as.Date(InvoiceDate, format = "%m/%d/%Y %H:%M" )), 
+                                  units = "days")) # how long from last date has it been since they purchased something
+    )
+
+head(retail_summary)
+
+```
+Now that we have some data we can work with, lets visualize them and see what segments of costumers exist within our dataset
+
+```{r}
+#| label: Histogram
+
+ggplot(retail_summary, aes(x = spend_sum)) +
+  geom_histogram() +
+  labs(
+    title = "Distributin of total spending"
+  )
+
+ggplot(retail_summary, aes(x = avg_quantity)) +
+  geom_histogram()+
+  labs(
+    title = "Distribution of average quantity"
+  )
+
+```
+   by the visualization we can only see few bars, but we know that there are other bars in the histogram because it is stretched in the y axis, but because they are so small we can not see them, so lets create a bar visualization
+
+```{r}
+#| label: bar_spending_intervals
+retail_summary <- retail_summary %>%
+  mutate(
+    spending_interval = cut(
+      spend_sum,
+      breaks = seq(0, max(spend_sum, na.rm = TRUE), by = 20000),
+      labels = paste0(seq(0, max(spend_sum, na.rm = TRUE) - 20000, by = 20000),
+                      " to ",
+                      seq(20000, max(spend_sum, na.rm = TRUE), by = 20000)),
+      include.lowest = TRUE
+    )# this add labels to each costumer by which interval the fall into, the interval goes from 0-20000, 20000-40000 and so on
+  )
+
+ggplot(retail_summary, aes(y = spending_interval)) +
+  geom_bar(fill = "steelblue", color = "black") +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5,hjust = -0.19, size = 3) +# adding label
+  labs(
+    title = "Customer Spending Intervals",
+    x = "Spending Interval",
+    y = "Count"
+  )
+
+```
+   This is one way we can create costumer segments, by putting the in intervals.  
+Now lets use K-means clustering to create costumer segments
+```{r}
+#| label: Num of Clusters
+
+retail_data_all_scaled <- retail_summary %>% 
+  select(spend_sum,avg_quantity,sum_transactions,recency) %>% # selecting and scaling data
+  as.data.frame(scale())
+
+
+fviz_nbclust(retail_data_all_scaled, kmeans, method = "wss") + 
+  labs(title = "Elbow Method for Optimal Number of Clusters") +
+  theme_minimal()
+
+
+```
+   The optimal amount of clusters to use would be 5
+```{r}
+#| label: Kmeans clustering
+
+set.seed(123)
+
+# Define and fit the model
+kmeans_spec <- k_means(num_clusters = 5) %>% set_engine("stats")
+kmeans_fit_2d <- kmeans_spec %>% fit(~ spend_sum + recency, data = retail_data_all_scaled)
+
+# Add clusters to the original data
+retail_data_all_scaled$cluster_2d <- as.factor(predict(kmeans_fit_2d, new_data = retail_data_all_scaled)$.pred_cluster)
+
+# Visualize the clusters
+ggplot(retail_data_all_scaled, aes(x = spend_sum, y = recency, color = cluster_2d)) +
+  geom_point(size = 1) +
+  labs(title = "K-means Clustering Results on Retail data", x = "Total Spending", y = "Recency") +
+  theme_minimal()
+```
+    
+   As we can see from the cluster analysis, we can divide the costumers into 5 groups, where the group with green labelling are the ones who have returned products, orange group show us that if the spending total is low, the costumer could be an repeating costumer or a returning costumer at the same time. as the spedning total increaset we can see that the recency is low, meaning that the highger the spending total, we could predict that the costumer is a repeat costumer who buys in bulk.
+   
+   # Question 11
+   
+### Are there any distinct paterns in costumer spending behaviour
+
+```{r}
+#| label: Patterns-Data
+patterns_summary <- retail_data_all_cleaned %>%
+  mutate(InvoiceDate = sub(" .*", "", InvoiceDate)) %>% 
+  group_by(InvoiceDate) %>% # groups it by ID and date, if there are more than one purchase per day
+  summarise(
+    spent_sum = sum(Price * Quantity, na.rm = TRUE), # total purchased
+  )
+patterns_summary <- patterns_summary %>% 
+  rename(date = 1) # renames the first column with name "date"
+
+head(patterns_summary)
+```
+
+   Now that we have data we can work with lets visualize and see if we can find any patterns.
+   
+```{r}
+#| label: Patterns-Visualization
+
+ggplot(patterns_summary, aes(x = as.Date(date), y = spent_sum)) + # over time plot
+  geom_smooth() +
+  geom_line() +
+  labs(
+    title = "Total Spend over time",
+    x = "Date",
+    y = "Total Spend"
+  )
+
+```
+
+   Judging by the scatterplot, we can say that the spending pattern stays stable during the year, but increases at the end of the year, this could be due to holidays and costumers are buying gifts
+   
+ # Question 10
+ ### Can we predict if a costumer will buy a specific product category
+ 
+To predict if a costumer will buy a certain category, we will use a decision tree
+
+```{r}
+retail_data_tree <- retail_data_all_cleaned %>%
+  select(Price, Quantity, InvoiceDate) %>%  # select only needed columns
+  mutate(price_range = cut(Price, 
+                           breaks = quantile(Price, probs = seq(0, 1, 0.2), na.rm = TRUE), # break prices into 5 categories, each category consists of 20 % of the data
+                           labels = c("Very Low", "Low", "Medium", "High", "Very High"),
+                           include.lowest = TRUE))
+
+```
+  ### Splitting Data
+```{r}
+#|label: Spliting data
+
+set.seed(123)
+
+retail_split <- initial_split(retail_data_tree, prop = 0.8)  # using 80/20 split
+retail_train <- training(retail_split)
+retail_test <- testing(retail_split)
+
+```
+
+### Defining and training decision tree model
+
+```{r}
+#| label: Tree model
+
+retail_tree_model <- decision_tree( # defining tree model
+  mode = "classification",
+  tree_depth = 3
+) %>% 
+  set_engine("rpart")
+
+retail_recipe <- recipe(price_range ~ Quantity, data = retail_train) # recipe
+retail_workflow <- workflow() %>% 
+  add_model(retail_tree_model) %>%
+  add_recipe(retail_recipe)
+
+retail_fit <- retail_workflow %>%  # adding the workflow for the trained data
+  fit(data = retail_train)
+
+```
+   
+### Evaluating the model
+
+```{r}
+#| label: Evaluating Model
+
+retail_predictions <- retail_fit %>% 
+  predict(retail_test) %>%  # making predictions
+  bind_cols(retail_test)
+
+retail_evaluation_metric <- retail_predictions %>%  # see how accurate our predictions are
+  metrics(truth = price_range, estimate = .pred_class)
+
+retail_confusion_matrix <- retail_predictions %>% 
+  conf_mat(truth = price_range, estimate = .pred_class)
+
+print(retail_evaluation_metric)
+
+print(retail_confusion_matrix)
+
+
+```
+### Visualizing the Decision Tree
+
+```{r}
+#| label: Tree Vizz
+
+retail_tree_viz <- retail_fit %>% # visualizing
+  extract_fit_engine()
+
+rpart.plot(retail_tree_viz, type = 5, extra = 104)
+
+```
+   
+  The confusion and the evaluation matrix shows us that we can only predict 1/3 of the data with the decision model tree, which is not a good model. In my opinion its hard to create a very accurate decision tree with this data because its under fitting, it only has little numerical columns which we can use to predict a categorical variable, in this case price_range
+   
+   
+   
+   
+   
+   
+   
